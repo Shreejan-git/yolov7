@@ -21,7 +21,8 @@ BASEDIR = os.path.dirname(__file__)
 
 class YoloV7:
     def __init__(self, conf_thres, device='cpu'):
-        self.weights = os.path.join(BASEDIR, 'weights', 'yolov7.pt')
+        # self.weights = os.path.join(BASEDIR, 'weights', 'yolov7.pt')
+        self.weights = os.path.join(BASEDIR, 'weights', 'best.pt')
         self.img_size = 640
         self.conf_thres = conf_thres
         self.iou_thres = 0.45
@@ -43,7 +44,7 @@ class YoloV7:
             logging.error(f'*****[INFO] Could not load the weight.*****')
             exit()
 
-    def detect(self, source, view_img=True, webcam=False, save_img=False, save_dir=os.path.join(BASEDIR,
+    def detect(self, source, view_img=False, webcam=False, save_img=False, save_dir=os.path.join(BASEDIR,
                                                                                                 'resources',
                                                                                                 'detection_results')):
         # Initialize
@@ -57,7 +58,6 @@ class YoloV7:
             dataset = LoadStreams(source, img_size=self.imgsz, stride=self.stride)
         else:
             dataset = LoadImages(source, img_size=self.imgsz, stride=self.stride)
-
         # Get names and colors
         names = self.model.module.names if hasattr(self.model, 'module') else self.model.names
         colors = [[random.randint(0, 255) for _ in range(3)] for _ in names]
@@ -70,7 +70,7 @@ class YoloV7:
         old_img_b = 1
 
         t0 = time.time()
-        for path, img, im0s, vid_cap in dataset:
+        for path, img, im0s, vid_cap in dataset:  # directory ho vane iterate garxa each image ma
 
             img = torch.from_numpy(img).to(self.device)
             img = img.half() if self.half else img.float()  # uint8 to fp16/32
@@ -99,6 +99,8 @@ class YoloV7:
             t3 = time_synchronized()
 
             # Process detections
+            cropped_detected_images_list = []
+            detected_object_count = 0
             for i, det in enumerate(pred):  # detections per image
                 if webcam:  # batch_size >= 1
                     p, s, im0, frame = path[i], '%g: ' % i, im0s[i].copy(), dataset.count
@@ -106,7 +108,6 @@ class YoloV7:
                     p, s, im0, frame = path, '', im0s, getattr(dataset, 'frame', 0)
 
                 p = Path(p)  # to Path
-
                 if len(det):
                     # Rescale boxes from img_size to im0 size
                     det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
@@ -117,13 +118,21 @@ class YoloV7:
                         s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
 
                     # Write results
-                    for *xyxy, conf, cls in reversed(det):
+                    for *bbox, confidence, cls in reversed(det):
+                        left, top, right, bottom = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+                        confidence: float = float(confidence)
+                        label: str = names[int(cls)]
+                        cropped_image = im0[top:bottom, left:right]
+                        cropped_detected_images_list.append(cropped_image)
+
                         if save_img or view_img:  # Add bbox to image
-                            label = f'{names[int(cls)]} {conf:.2f}'
-                            plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=1)
+                            label_ = f'{names[int(cls)]} {confidence:.2f}'
+                            plot_one_box(bbox, im0, label=label_, color=colors[int(cls)], line_thickness=1)
 
                 # Print time (inference + NMS)
                 print(f'{s}Done. ({(1E3 * (t2 - t1)):.1f}ms) Inference, ({(1E3 * (t3 - t2)):.1f}ms) NMS')
+
+                detected_object_count += len(det)
 
                 # Stream results
                 if view_img:
