@@ -13,7 +13,7 @@ if __name__ == "__main__":
         # by frame
         ret, frame = vid.read()
         if ret:
-            result.detect(source=frame)
+            result.detect(source=frame, webcam=True)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
