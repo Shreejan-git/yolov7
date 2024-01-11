@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 from numpy import random
@@ -44,23 +45,14 @@ class YoloV7:
             logging.error(f'*****[INFO] Could not load the weight.*****')
             exit()
 
-    def detect(self, source, view_img=False, webcam=False, save_img=False, save_dir=os.path.join(BASEDIR,
-                                                                                                'resources',
-                                                                                                'detection_results')):
+    def detect(self, source) -> list:
+
         # Initialize
         set_logging()
 
-        # Set Dataloader
-        vid_writer = None
-        if webcam:
-            # view_img = check_imshow()
-            cudnn.benchmark = True  # set True to speed up constant image size inference
-            dataset = LoadStreams(source, img_size=self.imgsz, stride=self.stride)
-        else:
-            dataset = LoadImages(source, img_size=self.imgsz, stride=self.stride)
-        # Get names and colors
+        dataset = LoadImages(source, img_size=self.imgsz, stride=self.stride)
+        # Get names
         names = self.model.module.names if hasattr(self.model, 'module') else self.model.names
-        colors = [[random.randint(0, 255) for _ in range(3)] for _ in names]
 
         # Run inference
         if self.device.type != 'cpu':
@@ -69,7 +61,7 @@ class YoloV7:
         old_img_w = old_img_h = self.imgsz
         old_img_b = 1
 
-        t0 = time.time()
+        final_data = []  # final data per image
         for path, img, im0s, vid_cap in dataset:  # directory ho vane iterate garxa each image ma
 
             img = torch.from_numpy(img).to(self.device)
@@ -88,76 +80,42 @@ class YoloV7:
                     self.model(img, augment=opt.augment)[0]
 
             # Inference
-            t1 = time_synchronized()
             with torch.no_grad():  # Calculating gradients would cause a GPU memory leak
                 pred = self.model(img, augment=opt.augment)[0]
-            t2 = time_synchronized()
 
             # Apply NMS
             pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, classes=opt.classes,
                                        agnostic=opt.agnostic_nms)
-            t3 = time_synchronized()
 
-            # Process detections
-            cropped_detected_images_list = []
-            detected_object_count = 0
             for i, det in enumerate(pred):  # detections per image
-                if webcam:  # batch_size >= 1
-                    p, s, im0, frame = path[i], '%g: ' % i, im0s[i].copy(), dataset.count
-                else:
-                    p, s, im0, frame = path, '', im0s, getattr(dataset, 'frame', 0)
 
-                p = Path(p)  # to Path
-                if len(det):
+                p, s, im0, frame = path, '', im0s, getattr(dataset, 'frame', 0)
+
+                detected_num = len(det)
+                if detected_num:
                     # Rescale boxes from img_size to im0 size
                     det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
 
-                    # Print results
                     for c in det[:, -1].unique():
                         n = (det[:, -1] == c).sum()  # detections per class
                         s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
 
-                    # Write results
+                    detected_objects = []
                     for *bbox, confidence, cls in reversed(det):
                         left, top, right, bottom = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
                         confidence: float = float(confidence)
                         label: str = names[int(cls)]
-                        cropped_image = im0[top:bottom, left:right]
-                        cropped_detected_images_list.append(cropped_image)
+                        cropped_image: np.ndarray = im0[top:bottom, left:right]
+                        object_data: list = [(left, top, right, bottom), confidence, label, cropped_image]
+                        detected_objects.append(object_data)
+                    final_data.append(detected_objects)
+                    final_data.append(detected_num)
+                    final_data.append(im0)
 
-                        if save_img or view_img:  # Add bbox to image
-                            label_ = f'{names[int(cls)]} {confidence:.2f}'
-                            plot_one_box(bbox, im0, label=label_, color=colors[int(cls)], line_thickness=1)
+                else:
+                    object_data: list = [(0.0, 0.0, 0.0, 0.0), 0.0, 'N/A', None]
+                    final_data.append([object_data])
+                    final_data.append(detected_num)
+                    final_data.append(im0)
 
-                # Print time (inference + NMS)
-                print(f'{s}Done. ({(1E3 * (t2 - t1)):.1f}ms) Inference, ({(1E3 * (t3 - t2)):.1f}ms) NMS')
-
-                detected_object_count += len(det)
-
-                # Stream results
-                if view_img:
-                    cv2.namedWindow(str(p), cv2.WINDOW_NORMAL)
-                    cv2.imshow(str(p), im0)
-                    cv2.waitKey(0)  # 1 millisecond
-
-                # Save results (image with detections)
-                if save_img:
-                    if dataset.mode == 'image':
-                        save_path = os.path.join(save_dir, 'images', p.name)
-                        cv2.imwrite(save_path, im0)
-                        print(f" The image with the result is saved in: {save_path}")
-                    else:  # 'video' or 'stream'
-                        save_path = os.path.join(save_dir, 'videos', p.name)
-
-                        if isinstance(vid_writer, cv2.VideoWriter):
-                            vid_writer.release()  # release previous video writer
-                        if vid_cap:  # video
-                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        else:  # stream
-                            fps, w, h = 30, im0.shape[1], im0.shape[0]
-                            save_path += '.mp4'
-                        vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                        vid_writer.write(im0)
-        print(f'Done. ({time.time() - t0:.3f}s)')
+            return final_data
